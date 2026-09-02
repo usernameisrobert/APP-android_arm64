@@ -1,0 +1,187 @@
+name: Build Blender APK
+
+# Reactive/blender-for-android rebuild via host-executable DNA/RNA generation.
+#
+# Strategy
+#  - The dshawshank fork deliberately disabled build-time DNA/RNA generation
+#    (it ran makesdna/makesrna as Android apps on-device instead) and hard-coded
+#    Windows D:/ paths and Windows .exe tools (datatoc/msgfmt). None of that can
+#    run headless on Linux CI, and the on-device SRNA path is circular (MakeSRNA
+#    links bf_rna/bf_dna which need the generated RNA files to exist).
+#  - Fix: rebuild makesdna/makesrna/datatoc/msgfmt as native x64 Linux host
+#    executables from their committed C sources, re-enable the commented
+#    add_custom_command generators, sed the D:/ paths to the CI layout, then
+#    run the Android build through Utilities/MakeBlender and APP/OBlender.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  # Base dir matching the original "D:/FreeProjects/Blender/Blender" layout.
+  BLROOT: "${{ github.workspace }}/Blender"
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout APP (workflow host)
+        uses: actions/checkout@v3
+        with:
+          repository: usernameisrobert/APP-android_arm64
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ env.BLROOT }}/APP-android_arm64
+
+      - name: Checkout Blender-android_arm64
+        uses: actions/checkout@v3
+        with:
+          repository: usernameisrobert/Blender-android_arm64
+          ref: blender-v3.6-release
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ env.BLROOT }}/Blender-android_arm64
+
+      - name: Checkout lib-android_arm64
+        uses: actions/checkout@v3
+        with:
+          repository: usernameisrobert/lib-android_arm64
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ env.BLROOT }}/lib-android_arm64
+
+      - name: Checkout Utilities-android_arm64
+        uses: actions/checkout@v3
+        with:
+          repository: usernameisrobert/Utilities-android_arm64
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ env.BLROOT }}/Utilities-android_arm64
+
+      - name: Set up JDK 11 (AGP 4.1.1 needs <= JDK 11)
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Install Android SDK, NDK, CMake
+        run: |
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          ls "$ANDROID_SDK_ROOT/cmdline-tools" || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
+          ls "$ANDROID_SDK_ROOT"
+          ls "$ANDROID_SDK_ROOT/ndk"
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.os == 'Linux' && '/usr/local/lib/android/sdk' || '' }}
+
+      - name: Rewrite hard-coded Windows paths to CI layout
+        run: |
+          grep -rl 'D:/FreeProjects/Blender/Blender' \
+            "$BLROOT/Blender-android_arm64" \
+            "$BLROOT/Utilities-android_arm64" \
+            "$BLROOT/APP-android_arm64" 2>/dev/null | while read -r f; do
+            sed -i 's|D:/FreeProjects/Blender/Blender|'"$BLROOT"'|g' "$f"
+          done
+          echo "--- sanity grep (should be empty) ---"
+          grep -rn 'D:/FreeProjects/Blender/Blender' "$BLROOT" || echo "ok: no hardcoded paths remain"
+
+      - name: Re-enable build-time DNA/RNA generation + host executables
+        run: |
+          M=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesdna/intern/CMakeLists.txt")
+          R=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesrna/intern/CMakeLists.txt")
+          # makesdna: enable the generator executable + its add_custom_command.
+          python3 - "$M" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          s = s.replace(
+              'add_library(makesdna STATIC\n        ${SRC})',
+              'add_executable(makesdna ${SRC} ${SRC_DNA_INC})')
+          s = s.replace(
+              '#add_custom_command(\n#  OUTPUT\n#    ${CMAKE_CURRENT_BINARY_DIR}/dna.c',
+              'add_custom_command(\n  OUTPUT\n    ${CMAKE_CURRENT_BINARY_DIR}/dna.c')
+          s = s.replace('#    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h', '    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h')
+          s = s.replace('#    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.c', '    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.c')
+          s = s.replace('#  COMMAND', '  COMMAND')
+          s = s.replace('#    "$<TARGET_FILE:makesdna>"', '    "$<TARGET_FILE:makesdna>"')
+          s = s.replace('#    ${CMAKE_CURRENT_BINARY_DIR}/dna.c', '    ${CMAKE_CURRENT_BINARY_DIR}/dna.c')
+          s = s.replace('#    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h', '    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h')
+          s = s.replace('#    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.c', '    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.c')
+          s = s.replace('#    ${CMAKE_SOURCE_DIR}/source/blender/makesdna/', '    ${CMAKE_SOURCE_DIR}/source/blender/makesdna/')
+          s = s.replace('#  DEPENDS makesdna', '  DEPENDS makesdna')
+          s = s.replace('#)', ')')
+          open(p, 'w').write(s)
+          PY
+          # makesrna: enable the generator executable.
+          python3 - "$R" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          s = s.replace(
+              'add_library(makesrna STATIC',
+              'add_executable(makesrna')
+          s = s.replace('#add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})',
+                        'add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})')
+          open(p, 'w').write(s)
+          PY
+          echo "--- verify ---"
+          grep -nE "add_executable\(makesdna|^add_custom_command|DEPENDS makesdna|add_executable\(makesrna" \
+            "$M" "$R"
+
+      - name: Provide Linux datatoc/msgfmt for the build cache dir
+        run: |
+          # Blender build needs datatoc + msgfmt as runnable tools. They exist as
+          # Unix targets in the tree and are produced during the first configure;
+          # ensure the Utilities copy is ignored (Windows exe) by not using it.
+          rm -f "$BLROOT/Utilities-android_arm64/Utilities/datatoc.exe" \
+                "$BLROOT/Utilities-android_arm64/Utilities/datatoc_icon.exe" \
+                "$BLROOT/Utilities-android_arm64/Utilities/msgfmt.exe"
+          echo "Windows exes removed (Linux build will compile its own datatoc/msgfmt)."
+
+      - name: Patch GHOST Android input backend (distinct mouse buttons)
+        run: |
+          F="$BLROOT/Blender-android_arm64/intern/ghost/intern/GHOST_SystemAndroid.cc"
+          if grep -q 'buttonPressFromState' "$F"; then
+            echo "input patch already present"
+          else
+            sed -i 's|currentButton(app)|buttonPressFromState(buttonState)|g' "$F"
+            echo "applied (manual review recommended)"
+          fi
+
+      - name: Build with MakeBlender (produces static libs incl. generated DNA/RNA)
+        working-directory: ${{ env.BLROOT }}/Utilities-android_arm64/MakeBlender
+        run: |
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export JAVA_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}"
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:externalNativeBuildRelease 2>&1 | tee /tmp/makeblender.log
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+      - name: Build OBlender (final APK)
+        working-directory: ${{ env.BLROOT }}/APP-android_arm64/OBlender
+        run: |
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleRelease 2>&1 | tee /tmp/oblender.log
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+      - name: Locate APK artifact
+        id: apk
+        run: |
+          APK=$(find "$BLROOT/APP-android_arm64" -name '*.apk' 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "No APK found"; exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: blender-arm64.apk
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
