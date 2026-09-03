@@ -1,0 +1,97 @@
+--- a/intern/ghost/intern/GHOST_SystemAndroid.cc	2026-09-03 18:41:46.537066313 -0500
++++ b/intern/ghost/intern/GHOST_SystemAndroid.cc	2026-09-03 18:41:46.549066313 -0500
+@@ -815,6 +815,12 @@
+     uint32_t width, height;
+     system->getMainDisplayDimensions(width, height);
+ 
++    //  OpenCode patch: derive the real hardware button from the motion event's
++    //  button state instead of relying on the never-set GetAsyncKeyState(3)/(4)
++    //  virtual keys (which caused every click to report as left-click).
++    int32_t buttonState = AMotionEvent_getButtonState(event);
++    int32_t actionCode = motionaction & AMOTION_EVENT_ACTION_MASK;
++
+     float msgPosX = AMotionEvent_getX(event, 0);    //  x坐标
+     float msgPosY = AMotionEvent_getY(event, 0);    //  y坐标
+     int64_t eventTime = AMotionEvent_getEventTime(event);         //  移动事件时间 {
+@@ -862,9 +868,10 @@
+                 new GHOST_EventCursor(currentTime, GHOST_kEventCursorMove, window, msgPosX,
+                                       msgPosY, td));
+         if (!checkMove) {
++            GHOST_TButton bDown = buttonPressFromState(buttonState);
+             system->pushEvent(
+                     new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonDown,
+-                                          window, GHOST_SystemAndroid::currentButton(app), td));
++                                          window, bDown, td));
+         }
+         // CLOG_ERROR(&LOG, "交互processButtonEvent 12 %s", strInfo.c_str());
+     } else if (motionaction == AMOTION_EVENT_ACTION_UP) {
+@@ -881,9 +888,10 @@
+                 new GHOST_EventCursor(currentTime, GHOST_kEventCursorMove, window, msgPosX,
+                                       msgPosY, td));
+         if (!checkMove) {
++            GHOST_TButton bUp = buttonPressFromState(buttonState);
+             system->pushEvent(
+                     new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonUp,
+-                                          window, GHOST_SystemAndroid::currentButton(app), td));
++                                          window, bUp, td));
+         }
+         for (int i = 3; i < 5; i++) {
+             bool check = app->GetAsyncKeyState(i) == 1;
+@@ -892,6 +900,34 @@
+             }
+         }
+         // CLOG_ERROR(&LOG, "交互processButtonEvent 16");
++    } else if (actionCode == AMOTION_EVENT_ACTION_BUTTON_PRESS) {
++        //  OpenCode patch: a dedicated mouse-button press came in as
++        //  ACTION_BUTTON_PRESS (many Android devices deliver mouse buttons this
++        //  way rather than as ACTION_DOWN). Map the pressed button from the
++        //  event's button state so RMB/MMB are emitted distinctly.
++        GHOST_TButton bBtn = buttonPressFromState(buttonState);
++        system->m_x = msgPosX;
++        system->m_y = msgPosY;
++        system->pushEvent(
++                new GHOST_EventCursor(currentTime, GHOST_kEventCursorMove, window, msgPosX,
++                                      msgPosY, td));
++        if (!checkMove) {
++            system->pushEvent(
++                    new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonDown,
++                                          window, bBtn, td));
++        }
++    } else if (actionCode == AMOTION_EVENT_ACTION_BUTTON_RELEASE) {
++        GHOST_TButton bBtn = buttonPressFromState(buttonState);
++        system->m_x = msgPosX;
++        system->m_y = msgPosY;
++        system->pushEvent(
++                new GHOST_EventCursor(currentTime, GHOST_kEventCursorMove, window, msgPosX,
++                                      msgPosY, td));
++        if (!checkMove) {
++            system->pushEvent(
++                    new GHOST_EventButton(currentTime, GHOST_TEventType::GHOST_kEventButtonUp,
++                                          window, bBtn, td));
++        }
+     } else if (motionaction == AMOTION_EVENT_ACTION_MOVE) {
+         if (checkClickPos(width, height, system->m_lastDownx, system->m_lastDowny) &&
+             (system->m_lastClickTopLeftBtn)) {
+@@ -1770,6 +1806,22 @@
+     }
+     return GHOST_kButtonMaskLeft;
+ }
++
++//  OpenCode patch: map a motion event's button state to a GHOST button.
++//  This lets the touch/pointer pipeline emit distinct LMB/RMB/MMB events from
++//  an actual hardware mouse instead of always reporting left-click.
++static GHOST_TButton buttonPressFromState(int32_t buttonState) {
++    if (buttonState & AMOTION_EVENT_BUTTON_TERTIARY) {
++        return GHOST_kButtonMaskMiddle;
++    }
++    if (buttonState & AMOTION_EVENT_BUTTON_SECONDARY) {
++        return GHOST_kButtonMaskRight;
++    }
++    if (buttonState & AMOTION_EVENT_BUTTON_PRIMARY) {
++        return GHOST_kButtonMaskLeft;
++    }
++    return GHOST_kButtonMaskLeft;
++}
+ 
+ GHOST_TCapabilityFlag GHOST_SystemAndroid::getCapabilities() const{
+     return GHOST_TCapabilityFlag(GHOST_CAPABILITY_FLAG_ALL &

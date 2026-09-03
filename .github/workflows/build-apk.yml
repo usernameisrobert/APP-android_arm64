@@ -260,10 +260,28 @@ jobs:
           F="$BLROOT/Blender-android_arm64/intern/ghost/intern/GHOST_SystemAndroid.cc"
           if grep -q 'buttonPressFromState' "$F"; then
             echo "input patch already present"
-          else
-            sed -i 's|currentButton(app)|buttonPressFromState(buttonState)|g' "$F"
-            echo "applied (manual review recommended)"
+            exit 0
           fi
+          # The dshawshank backend reports every click as left because it uses
+          # GetAsyncKeyState(3)/(4) virtual keys that nothing ever sets. Add a
+          # buttonPressFromState() derived from the motion event's real button
+          # state and emit distinct LMB/RMB/MMB (incl. ACTION_BUTTON_PRESS/RELEASE).
+          PATCH_FILE="$BLROOT/APP-android_arm64/input_button.patch"
+          (cd "$BLROOT/Blender-android_arm64" && git apply --check "$PATCH_FILE") \
+            && (cd "$BLROOT/Blender-android_arm64" && git apply "$PATCH_FILE") \
+            || { echo "git apply failed, trying patch -p1"; (cd "$BLROOT/Blender-android_arm64" && patch -p1 < "$PATCH_FILE"); }
+          grep -n 'buttonPressFromState' "$F"
+
+      - name: Fix missing generated third-party headers (pnglibconf.h)
+        run: |
+          # lib-android_arm64 ships the libpng source tree but not the generated
+          # pnglibconf.h (produces by libpng's build). Use the generic prebuilt.
+          PNG_SRC="$BLROOT/lib-android_arm64/Png/include/libpng-1.6.40"
+          if [ -f "$PNG_SRC/scripts/pnglibconf.h.prebuilt" ] && [ ! -f "$PNG_SRC/pnglibconf.h" ]; then
+            cp "$PNG_SRC/scripts/pnglibconf.h.prebuilt" "$PNG_SRC/pnglibconf.h"
+            echo "installed pnglibconf.h from prebuilt"
+          fi
+          ls -la "$PNG_SRC/pnglibconf.h"
 
       - name: Build with MakeBlender (produces ARM64 static libs incl. bf_dna/bf_rna)
         working-directory: ${{ env.BLROOT }}/Utilities-android_arm64/MakeBlender
