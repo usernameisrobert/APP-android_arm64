@@ -2,16 +2,24 @@ name: Build Blender APK
 
 # Reactive/blender-for-android rebuild via host-executable DNA/RNA generation.
 #
-# Strategy
-#  - The dshawshank fork deliberately disabled build-time DNA/RNA generation
-#    (it ran makesdna/makesrna as Android apps on-device instead) and hard-coded
-#    Windows D:/ paths and Windows .exe tools (datatoc/msgfmt). None of that can
-#    run headless on Linux CI, and the on-device SRNA path is circular (MakeSRNA
-#    links bf_rna/bf_dna which need the generated RNA files to exist).
-#  - Fix: rebuild makesdna/makesrna/datatoc/msgfmt as native x64 Linux host
-#    executables from their committed C sources, re-enable the commented
-#    add_custom_command generators, sed the D:/ paths to the CI layout, then
-#    run the Android build through Utilities/MakeBlender and APP/OBlender.
+# Strategy (two-stage build; the fork is designed for it — see Doc/Compile Flow_en.txt)
+#  - The dshawshank fork deliberately disabled build-time DNA/RNA generation: it ran
+#    makesdna / makesrna as *Android apps on-device* (MakeSDNA / MakeSRNA projects in
+#    Utilities-android_arm64), copied the resulting dna.c/dna_type_offsets.h/dna_verify.c
+#    and rna_*_gen.c files into the MakeBlender .cxx CMake binary dir, then compiled the
+#    ARM64 Blender static libs and OBlender. That on-device flow is impossible on a
+#    headless Linux CI runner.
+#  - Fix: make the SAME generated files using *host* (native Linux) executables of
+#    makesdna/makesrna, run them once to produce the DNA/RNA C sources, deposit those
+#    exactly where the ARM build expects them (matching the doc's copy steps), then run
+#    the ordinary ARM64 MakeBlender + OBlender builds with the generators left commented
+#    out (their committed state).
+#
+# Stage 1: configure a native host build of the Blender source, enable the makesdna /
+#          makesrna executables + generators, build+run them, harvest the generated files.
+# Stage 2: restore makesdna/makesrna to STATIC libs (their committed state), pre-place the
+#          generated files into the MakeBlender .cxx binary dirs, build the ARM64 libs.
+# Stage 3: assemble OBlender APK.
 
 on:
   workflow_dispatch:
@@ -21,6 +29,8 @@ on:
 env:
   # Base dir matching the original "D:/FreeProjects/Blender/Blender" layout.
   BLROOT: "${{ github.workspace }}/Blender"
+  # Generic ARM64 CMake binary dir used by the MakeBlender Gradle externalNativeBuild.
+  MAKEDIR: "${{ github.workspace }}/Blender/Utilities-android_arm64/MakeBlender/app/.cxx/cmake/release/arm64-v8a"
 
 jobs:
   build:
@@ -84,7 +94,6 @@ jobs:
           SM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SM" --licenses >/dev/null 2>&1 || true
           "$SM" "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
-          ls "$ANDROID_SDK_ROOT"
           ls "$ANDROID_SDK_ROOT/ndk"
 
       - name: Re-select JDK 11 for Gradle build
@@ -92,6 +101,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '11'
+
+      - name: Install Gradle 6.5 (wrapper jar is not committed in these repos)
+        run: |
+          curl -fsSL -o /tmp/gradle-bin.zip \
+            "https://services.gradle.org/distributions/gradle-6.5-bin.zip"
+          unzip -q /tmp/gradle-bin.zip -d /opt
+          echo "/opt/gradle-6.5/bin" >> "$GITHUB_PATH"
+          gradle --version 2>&1 | head -6
 
       - name: Rewrite hard-coded Windows paths to CI layout
         run: |
@@ -101,22 +118,20 @@ jobs:
             "$BLROOT/APP-android_arm64" 2>/dev/null | while read -r f; do
             sed -i 's|D:/FreeProjects/Blender/Blender|'"$BLROOT"'|g' "$f"
           done
-          # The dshawshank fork hard-codes the Python include dir with the wrong
-          # case: real layout is cpython/include/Include/Python.h (capital I),
-          # but the find module points at cpython/include/include/. Windows
-          # filesystems are case-insensitive so it worked there; Linux is not.
+          # Python include dir hard-coded with wrong case (include/include vs Include).
+          # Windows FS is case-insensitive; Linux is not.
           FINDPM="$BLROOT/Blender-android_arm64/build_files/cmake/Modules/FindPythonLibsUnix.cmake"
           sed -i 's|cpython/include/include/|cpython/include/Include/|g' "$FINDPM"
           echo "--- sanity grep (should be empty) ---"
           grep -rn 'D:/FreeProjects/Blender/Blender' "$BLROOT" || echo "ok: no hardcoded paths remain"
-          echo "--- python include dir after fix ---"
-          grep -nE 'PYTHON_INCLUDE_DIR|PYTHON_INCLUDE_CONFIG_DIR' "$FINDPM"
 
-      - name: Re-enable build-time DNA/RNA generation + host executables
+      # ------------------------------------------------------------------
+      # Stage 1: HOST (native Linux) DNA/RNA generation.
+      # ------------------------------------------------------------------
+      - name: Enable host generation targets (makesdna/makesrna executables + generators)
         run: |
           M=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesdna/intern/CMakeLists.txt")
           R=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesrna/intern/CMakeLists.txt")
-          # makesdna: enable the generator executable + its add_custom_command.
           python3 - "$M" <<'PY'
           import sys
           p = sys.argv[1]
@@ -139,39 +154,106 @@ jobs:
           s = s.replace('#)', ')')
           open(p, 'w').write(s)
           PY
-          # makesrna: enable the generator executable.
+          # The db showed line 387 is `#add_executable(makesrna ...)` and line 389 is
+          # `add_library(makesrna STATIC`. For the HOST build we want the executable ONLY,
+          # so we un-comment 387 and neutralize the static-lib block below it.
           python3 - "$R" <<'PY'
           import sys
           p = sys.argv[1]
           s = open(p).read()
-          s = s.replace(
-              'add_library(makesrna STATIC',
-              'add_executable(makesrna')
           s = s.replace('#add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})',
                         'add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})')
+          # The static-lib fallback must not also declare makesrna -> remove that block.
+          s = s.replace('add_library(makesrna STATIC\n        ${SRC})',
+                        '#add_library(makesrna STATIC\n#        ${SRC})')
+          # Enable the RNA generator.
+          s = s.replace('#add_custom_command(\n#  OUTPUT ${GENSRC}',
+                        'add_custom_command(\n  OUTPUT ${GENSRC}')
+          s = s.replace('#  COMMAND "$<TARGET_FILE:makesrna>" ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../',
+                        '  COMMAND "$<TARGET_FILE:makesrna>" ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../')
+          s = s.replace('#  DEPENDS makesrna', '  DEPENDS makesrna')
+          s = s.replace('#)', ')')
           open(p, 'w').write(s)
           PY
           echo "--- verify ---"
-          grep -nE "add_executable\(makesdna|^add_custom_command|DEPENDS makesdna|add_executable\(makesrna" \
+          grep -nE "add_executable\(makesdna|add_executable\(makesrna|add_custom_command|DEPENDS makesdna|DEPENDS makesrna" \
             "$M" "$R"
+
+      - name: Stage 1 - configure + run host makesdna/makesrna generators
+        run: |
+          SRC="$BLROOT/Blender-android_arm64"
+          HOST=/tmp/blender-host
+          rm -rf "$HOST"
+          cmake -S "$SRC" -B "$HOST" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_PYTHON=OFF -DWITH_PYTHON_INSTALL=OFF \
+            -DWITH_CYCLES=OFF -DWITH_OPENVDB=OFF -DWITH_OPENVDB_BLOSC=OFF \
+            -DWITH_OPENCOLLADA=OFF -DWITH_ALEMBIC=OFF -DWITH_USD=OFF \
+            -DWITH_OPENSUBDIV=OFF -DWITH_OPENIMAGEDENOISE=OFF -DWITH_OPENMP=OFF \
+            -DWITH_FFTW3=OFF -DWITH_FFMPEG=OFF -DWITH_OPENAL=OFF -DWITH_AUDASPACE=OFF \
+            -DWITH_BULLET=OFF -DWITH_QUADRIFLOW=OFF -DWITH_OPENCOLORIO=OFF \
+            -DWITH_INTERNATIONAL=OFF -DWITH_XR_OPENXR=OFF \
+            > /tmp/host-configure.log 2>&1 || { echo "CONFIGURE FAILED"; tail -60 /tmp/host-configure.log; exit 1; }
+          cmake --build "$HOST" --target makesdna makesrna bf_dna bf_rna -j"$(nproc)" \
+            > /tmp/host-build.log 2>&1 || { echo "HOST BUILD FAILED"; tail -80 /tmp/host-build.log; exit 1; }
+          echo "----- generated DNA files -----"
+          ls -la "$HOST/source/blender/makesdna/intern/" | grep -E "dna\.c|dna_verify\.c|dna_type_offsets\.h"
+          echo "----- generated RNA files -----"
+          ls -la "$HOST/source/blender/makesrna/intern/" | grep -E "_gen\.c|rna_prototypes_gen\.h" | head
+          ls -la "$HOST/source/blender/makesrna/RNA_prototypes.h"
+
+      - name: Stage 1 - deposit generated files into ARM MakeBlender binary dirs
+        run: |
+          HOST=/tmp/blender-host
+          DNA_DST="$MAKEDIR/source/blender/makesdna/intern"
+          RNA_DST="$MAKEDIR/source/blender/makesrna/intern"
+          RNA_PARENT_DST="$MAKEDIR/source/blender/makesrna"
+          mkdir -p "$DNA_DST" "$RNA_DST" "$RNA_PARENT_DST"
+          # DNA
+          cp "$HOST/source/blender/makesdna/intern/dna.c" \
+             "$HOST/source/blender/makesdna/intern/dna_type_offsets.h" \
+             "$HOST/source/blender/makesdna/intern/dna_verify.c" \
+             "$DNA_DST/"
+          # Fix any on-device path string inside dna_verify.c (host gen should be clean,
+          # but guard anyway).
+          sed -i 's|/data/data/com.epai.makesdna/makesdna|'"$BLROOT/Blender-android_arm64/source/blender/makesdna"'|g' \
+            "$DNA_DST/dna_verify.c" || true
+          # RNA: rna_*_gen.c + rna_prototypes_gen.h -> intern
+          cp "$HOST"/source/blender/makesrna/intern/rna_*_gen.c "$RNA_DST/"
+          cp "$HOST"/source/blender/makesrna/intern/rna_prototypes_gen.h "$RNA_DST/"
+          # RNA_prototypes.h -> makesrna/ binary parent + source tree
+          cp "$HOST/source/blender/makesrna/RNA_prototypes.h" "$RNA_PARENT_DST/"
+          cp "$HOST/source/blender/makesrna/RNA_prototypes.h" \
+             "$BLROOT/Blender-android_arm64/source/blender/makesrna/"
+          echo "----- deposited DNA -----"
+          ls -la "$DNA_DST"
+          echo "----- deposited RNA (intern) -----"
+          ls "$RNA_DST" | head
+          echo "----- deposited RNA (parent + source) -----"
+          ls "$RNA_PARENT_DST"
+          ls "$BLROOT/Blender-android_arm64/source/blender/makesrna/RNA_prototypes.h"
+
+      # ------------------------------------------------------------------
+      # Stage 2: revert generators, then the normal ARM64 MakeBlender build
+      # ------------------------------------------------------------------
+      - name: Stage 2 - restore STATIC libs (revert host-gen enablement)
+        run: |
+          M=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesdna/intern/CMakeLists.txt")
+          R=$(realpath "$BLROOT/Blender-android_arm64/source/blender/makesrna/intern/CMakeLists.txt")
+          git -C "$BLROOT/Blender-android_arm64" checkout -- \
+            source/blender/makesdna/intern/CMakeLists.txt \
+            source/blender/makesrna/intern/CMakeLists.txt
+          echo "restored to committed state (STATIC libs, generators commented)"
+          grep -nE "add_executable\(makesdna|add_executable\(makesrna|add_library\(makesdna|add_library\(makesrna" "$M" "$R"
 
       - name: Provide Linux datatoc/msgfmt for the build cache dir
         run: |
-          # Blender build needs datatoc + msgfmt as runnable tools. They exist as
-          # Unix targets in the tree and are produced during the first configure;
-          # ensure the Utilities copy is ignored (Windows exe) by not using it.
+          # Blender build produces datatoc/msgfmt as Unix targets during the first
+          # configure; the Windows exes can't run. Remove them if present.
           rm -f "$BLROOT/Utilities-android_arm64/Utilities/datatoc.exe" \
                 "$BLROOT/Utilities-android_arm64/Utilities/datatoc_icon.exe" \
                 "$BLROOT/Utilities-android_arm64/Utilities/msgfmt.exe"
           echo "Windows exes removed (Linux build will compile its own datatoc/msgfmt)."
-
-      - name: Install Gradle 6.5 (wrapper jar is not committed in these repos)
-        run: |
-          curl -fsSL -o /tmp/gradle-bin.zip \
-            "https://services.gradle.org/distributions/gradle-6.5-bin.zip"
-          unzip -q /tmp/gradle-bin.zip -d /opt
-          echo "/opt/gradle-6.5/bin" >> "$GITHUB_PATH"
-          gradle --version 2>&1 | head -6
 
       - name: Patch GHOST Android input backend (distinct mouse buttons)
         run: |
@@ -183,7 +265,7 @@ jobs:
             echo "applied (manual review recommended)"
           fi
 
-      - name: Build with MakeBlender (produces static libs incl. generated DNA/RNA)
+      - name: Build with MakeBlender (produces ARM64 static libs incl. bf_dna/bf_rna)
         working-directory: ${{ env.BLROOT }}/Utilities-android_arm64/MakeBlender
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -196,6 +278,9 @@ jobs:
           export JAVA_HOME="$JAVA_HOME_11_X64"
           gradle --no-daemon :app:externalNativeBuildRelease 2>&1 | tee /tmp/makeblender.log
 
+      # ------------------------------------------------------------------
+      # Stage 3: OBlender final APK
+      # ------------------------------------------------------------------
       - name: Build OBlender (final APK)
         working-directory: ${{ env.BLROOT }}/APP-android_arm64/OBlender
         env:
