@@ -157,6 +157,14 @@ jobs:
                 "$BLROOT/Utilities-android_arm64/Utilities/msgfmt.exe"
           echo "Windows exes removed (Linux build will compile its own datatoc/msgfmt)."
 
+      - name: Install Gradle 6.5 (wrapper jar is not committed in these repos)
+        run: |
+          curl -fsSL -o /tmp/gradle-bin.zip \
+            "https://services.gradle.org/distributions/gradle-6.5-bin.zip"
+          unzip -q /tmp/gradle-bin.zip -d /opt
+          echo "/opt/gradle-6.5/bin" >> "$GITHUB_PATH"
+          gradle --version 2>&1 | head -6
+
       - name: Patch GHOST Android input backend (distinct mouse buttons)
         run: |
           F="$BLROOT/Blender-android_arm64/intern/ghost/intern/GHOST_SystemAndroid.cc"
@@ -169,22 +177,29 @@ jobs:
 
       - name: Build with MakeBlender (produces static libs incl. generated DNA/RNA)
         working-directory: ${{ env.BLROOT }}/Utilities-android_arm64/MakeBlender
-        run: |
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          export JAVA_HOME="${JAVA_HOME:-$(dirname $(dirname $(readlink -f $(which java))))}"
-          chmod +x gradlew
-          ./gradlew --no-daemon :app:externalNativeBuildRelease 2>&1 | tee /tmp/makeblender.log
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+          NDK_ROOT: /usr/local/lib/android/sdk/ndk/21.4.7075529
+        run: |
+          set -o pipefail
+          printf 'sdk.dir=%s\nndk.dir=%s\n' "$ANDROID_SDK_ROOT" "$NDK_ROOT" > local.properties
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export ANDROID_NDK_HOME="$NDK_ROOT"
+          export JAVA_HOME="$JAVA_HOME_11_X64"
+          gradle --no-daemon :app:externalNativeBuildRelease 2>&1 | tee /tmp/makeblender.log
 
       - name: Build OBlender (final APK)
         working-directory: ${{ env.BLROOT }}/APP-android_arm64/OBlender
-        run: |
-          export ANDROID_HOME="$ANDROID_SDK_ROOT"
-          chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleRelease 2>&1 | tee /tmp/oblender.log
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+          NDK_ROOT: /usr/local/lib/android/sdk/ndk/21.4.7075529
+        run: |
+          set -o pipefail
+          printf 'sdk.dir=%s\nndk.dir=%s\n' "$ANDROID_SDK_ROOT" "$NDK_ROOT" > local.properties
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export ANDROID_NDK_HOME="$NDK_ROOT"
+          export JAVA_HOME="$JAVA_HOME_11_X64"
+          gradle --no-daemon :app:assembleRelease 2>&1 | tee /tmp/oblender.log
 
       - name: Locate APK artifact
         id: apk
