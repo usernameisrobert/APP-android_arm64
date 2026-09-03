@@ -24,7 +24,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     steps:
       - name: Checkout APP (workflow host)
@@ -66,6 +66,8 @@ jobs:
           java-version: '11'
 
       - name: Install Android SDK, NDK, CMake
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           ls "$ANDROID_SDK_ROOT/cmdline-tools" || true
@@ -73,8 +75,6 @@ jobs:
           sdkmanager "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
           ls "$ANDROID_SDK_ROOT"
           ls "$ANDROID_SDK_ROOT/ndk"
-        env:
-          ANDROID_SDK_ROOT: ${{ runner.os == 'Linux' && '/usr/local/lib/android/sdk' || '' }}
 
       - name: Rewrite hard-coded Windows paths to CI layout
         run: |
