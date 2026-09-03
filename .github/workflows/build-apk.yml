@@ -65,19 +65,32 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v3
+      - name: Set up JDK 17 (sdkmanager needs newer Java)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-      - name: Install Android SDK, NDK, CMake
+      - name: Install Android cmdline-tools + SDK packages
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/clt.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q /tmp/clt.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          which sdkmanager || ls "$ANDROID_SDK_ROOT/cmdline-tools" || true
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platforms;android-30" "build-tools;30.0.3" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
           ls "$ANDROID_SDK_ROOT"
           ls "$ANDROID_SDK_ROOT/ndk"
+
+      - name: Re-select JDK 11 for Gradle build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
 
       - name: Rewrite hard-coded Windows paths to CI layout
         run: |
