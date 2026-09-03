@@ -101,8 +101,16 @@ jobs:
             "$BLROOT/APP-android_arm64" 2>/dev/null | while read -r f; do
             sed -i 's|D:/FreeProjects/Blender/Blender|'"$BLROOT"'|g' "$f"
           done
+          # The dshawshank fork hard-codes the Python include dir with the wrong
+          # case: real layout is cpython/include/Include/Python.h (capital I),
+          # but the find module points at cpython/include/include/. Windows
+          # filesystems are case-insensitive so it worked there; Linux is not.
+          FINDPM="$BLROOT/Blender-android_arm64/build_files/cmake/Modules/FindPythonLibsUnix.cmake"
+          sed -i 's|cpython/include/include/|cpython/include/Include/|g' "$FINDPM"
           echo "--- sanity grep (should be empty) ---"
           grep -rn 'D:/FreeProjects/Blender/Blender' "$BLROOT" || echo "ok: no hardcoded paths remain"
+          echo "--- python include dir after fix ---"
+          grep -nE 'PYTHON_INCLUDE_DIR|PYTHON_INCLUDE_CONFIG_DIR' "$FINDPM"
 
       - name: Re-enable build-time DNA/RNA generation + host executables
         run: |
