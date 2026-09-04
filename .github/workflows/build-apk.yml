@@ -218,9 +218,12 @@ jobs:
           # but guard anyway).
           sed -i 's|/data/data/com.epai.makesdna/makesdna|'"$BLROOT/Blender-android_arm64/source/blender/makesdna"'|g' \
             "$DNA_DST/dna_verify.c" || true
-          # RNA: rna_*_gen.c + rna_prototypes_gen.h -> intern
+          # RNA: all generated files -> intern (rna_*_gen.c, rna_prototypes_gen.h,
+          # RNA_blender_cpp.h, RNA_blender.h)
           cp "$HOST"/source/blender/makesrna/intern/rna_*_gen.c "$RNA_DST/"
           cp "$HOST"/source/blender/makesrna/intern/rna_prototypes_gen.h "$RNA_DST/"
+          cp "$HOST"/source/blender/makesrna/intern/RNA_blender_cpp.h "$RNA_DST/"
+          cp "$HOST"/source/blender/makesrna/intern/RNA_blender.h "$RNA_DST/"
           # RNA_prototypes.h -> makesrna/ binary parent + source tree
           cp "$HOST/source/blender/makesrna/RNA_prototypes.h" "$RNA_PARENT_DST/"
           cp "$HOST/source/blender/makesrna/RNA_prototypes.h" \
