@@ -171,10 +171,18 @@ jobs:
                         'add_custom_command(\n  OUTPUT ${GENSRC}')
           s = s.replace('#  COMMAND "$<TARGET_FILE:makesrna>" ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../',
                         '  COMMAND "$<TARGET_FILE:makesrna>" ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../')
-          s = s.replace('#  DEPENDS makesrna', '  DEPENDS makesrna')
-          s = s.replace('#)', ')')
-          open(p, 'w').write(s)
-          PY
+           s = s.replace('#  DEPENDS makesrna', '  DEPENDS makesrna')
+           s = s.replace('#)', ')')
+           # The ARM build keeps WITH_MOD_FLUID ON (its python is not disabled), so its
+           # makesrna defines WITH_FLUID and RNA_blender_cpp.h declares the fluid/smoke
+           # grid accessors (FluidDomainSettings_*_grid_get*) that cycles volume.cpp needs.
+           # Our HOST build sets -DWITH_PYTHON=OFF which cascades WITH_MOD_FLUID=OFF and
+           # would omit those declarations. Force WITH_FLUID for the host makesrna compile
+           # so the generated RNA_blender_cpp.h matches what the ARM cycles build expects.
+           s = s.replace('if(WITH_MOD_FLUID)\n  add_definitions(-DWITH_FLUID)\nendif()',
+                         'add_definitions(-DWITH_FLUID)')
+           open(p, 'w').write(s)
+           PY
           echo "--- verify ---"
           grep -nE "add_executable\(makesdna|add_executable\(makesrna|add_custom_command|DEPENDS makesdna|DEPENDS makesrna" \
             "$M" "$R"
