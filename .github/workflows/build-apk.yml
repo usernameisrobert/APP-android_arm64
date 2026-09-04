@@ -234,9 +234,20 @@ jobs:
           cp "$HOST/source/blender/makesrna/RNA_prototypes.h" "$RNA_PARENT_DST/"
           cp "$HOST/source/blender/makesrna/RNA_prototypes.h" \
              "$BLROOT/Blender-android_arm64/source/blender/makesrna/"
+          # cycles/blender/*.h does #include "RNA_blender_cpp.h" and resolves it via
+          # BOTH an absolute -I<source>/makesrna (parent) and a relative
+          # -Isource/blender/makesrna/intern. Deposit the generated C++ RNA headers
+          # into the binary intern dir AND the source makesrna parent so the include
+          # is found regardless of which include path the compiler uses.
+          cp "$HOST/source/blender/makesrna/intern/RNA_blender_cpp.h" \
+             "$BLROOT/Blender-android_arm64/source/blender/makesrna/"
+          cp "$HOST/source/blender/makesrna/intern/RNA_blender.h" \
+             "$BLROOT/Blender-android_arm64/source/blender/makesrna/"
           for f in "$DNA_DST/dna.c" "$RNA_DST/rna_prototypes_gen.h" \
                    "$RNA_DST/RNA_blender_cpp.h" "$RNA_DST/RNA_blender.h" \
-                   "$RNA_PARENT_DST/RNA_prototypes.h"; do
+                   "$RNA_PARENT_DST/RNA_prototypes.h" \
+                   "$BLROOT/Blender-android_arm64/source/blender/makesrna/RNA_blender_cpp.h" \
+                   "$BLROOT/Blender-android_arm64/source/blender/makesrna/RNA_blender.h"; do
             [ -f "$f" ] || { echo "MISSING generated file: $f"; exit 1; }
           done
           echo "----- deposited DNA -----"
